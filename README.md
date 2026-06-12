@@ -8,7 +8,8 @@ A full-stack expense-splitting application inspired by Splitwise, built as an in
 
 ## Live Demo
 
-> Deploy the app using the instructions below. A Railway + Vercel deployment is recommended (see [Deployment](#deployment)).
+- **Frontend**: https://splitwise-frontend-8fjh.onrender.com
+- **Backend API**: https://splitwise-backend-5ih3.onrender.com
 
 ---
 

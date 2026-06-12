@@ -18,8 +18,10 @@ const server = http.createServer(app);
 const prisma = new PrismaClient();
 
 const allowedOrigin = (origin, callback) => {
-  // allow requests with no origin (curl, Postman) and any localhost port in dev
-  if (!origin || /^http:\/\/localhost:\d+$/.test(origin) || origin === process.env.CLIENT_URL) {
+  const isLocalhost = /^http:\/\/localhost:\d+$/.test(origin);
+  const isRender = /^https:\/\/[a-z0-9-]+\.onrender\.com$/.test(origin);
+  const isClientUrl = origin === process.env.CLIENT_URL;
+  if (!origin || isLocalhost || isRender || isClientUrl) {
     callback(null, true);
   } else {
     callback(new Error('Not allowed by CORS'));

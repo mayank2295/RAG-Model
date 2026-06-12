@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Database (file, not migrations — migrations must be committed for deployment)
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+backend/prisma/*.db
+
+# Build output
+frontend/dist/
+frontend/.vite/
+
+# Prisma generated client
+backend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

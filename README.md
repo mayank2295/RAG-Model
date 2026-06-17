@@ -1,241 +1,220 @@
-# SplitWise Clone
+# Simple RAG Model
 
-A full-stack expense-splitting application inspired by Splitwise, built as an internship assignment.
-
-**AI Tool Used**: Claude (claude.ai / Claude Code) — used as the primary development collaborator throughout the entire build.
+A from-scratch implementation of **Retrieval-Augmented Generation (RAG)** designed to be read and understood, not just run. Every file is heavily commented to explain the *why*, not just the *what*.
 
 ---
 
-## Live Demo
+## What is RAG?
 
-- **Frontend**: https://splitwise-frontend-8fjh.onrender.com
-- **Backend API**: https://splitwise-backend-5ih3.onrender.com
+Imagine you ask a question to a very smart person who has only read general books (an LLM). They'll give you a reasonable answer, but they might not know the specific details in *your* documents.
+
+RAG solves this by first **searching your documents** for relevant information, then **handing that information** to the LLM so it can answer with grounded, specific facts.
+
+```
+User Question
+     │
+     ▼
+┌─────────────────────────────────────────────────────────┐
+│                     RAG Pipeline                        │
+│                                                         │
+│  ┌──────────────┐    ┌──────────────┐   ┌───────────┐  │
+│  │   Embedder   │───▶│ Vector Store │──▶│ Retrieved │  │
+│  │ (encodes the │    │    (FAISS)   │   │  Chunks   │  │
+│  │   question)  │    │ (finds most  │   │           │  │
+│  └──────────────┘    │  similar     │   └─────┬─────┘  │
+│                      │  chunks)     │         │        │
+│                      └──────────────┘         │        │
+│                                               ▼        │
+│                                    ┌──────────────────┐ │
+│                                    │   Claude LLM     │ │
+│                                    │ (reads context + │ │
+│                                    │ writes answer)   │ │
+│                                    └──────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+     │
+     ▼
+  Answer (grounded in YOUR documents)
+```
 
 ---
 
-## Tech Stack
+## How It Works — Step by Step
 
-| Layer | Technology |
-|---|---|
-| Frontend | React 18 + Vite + TailwindCSS + React Router v6 |
-| Backend | Node.js + Express.js |
-| Database | SQLite (file-based, via Prisma ORM) |
-| Auth | JWT stored in localStorage |
-| Real-time | Socket.io |
-| UI Helpers | react-hot-toast, axios |
+### Phase 1: Indexing (happens once at startup)
 
----
+```
+Documents (text files)
+       │
+       ▼
+  document_loader.py  ──▶  Splits text into overlapping chunks
+       │
+       ▼
+  embedder.py         ──▶  Converts each chunk into a 384-dim vector
+       │
+       ▼
+  vector_store.py     ──▶  Stores all vectors in a FAISS index
+```
 
-## Features
+**Why chunks?** LLMs have a limited context window. Instead of passing an entire document, we pass only the most relevant pieces.
 
-- **Authentication** — Register and login with email/password. JWT persists across page refreshes.
-- **Groups** — Create groups, search and add members by email, remove members.
-- **Expenses** — Add expenses with four split modes:
-  - **Equal** — divided evenly across all selected members
-  - **Unequal** — each member's amount entered manually (validated to sum to total)
-  - **Percentage** — each member gets a % (validated to sum to 100)
-  - **Shares** — integer share counts, amounts computed proportionally
-- **Balances** — Group-level balance breakdown per member and personal balance summary across all groups.
-- **Settlements** — Record cash payments between any two members to reduce outstanding debts.
-- **Real-time Chat** — Each expense has a live discussion thread powered by Socket.io.
+**Why overlap?** If a sentence spans two chunks, overlap ensures it's captured in at least one of them.
+
+**Why vectors?** Vectors let us do *semantic search* — finding text that means the same thing even with different words. "automobile" and "car" have similar vectors.
+
+### Phase 2: Retrieval + Generation (happens per query)
+
+```
+User question: "What is RAG?"
+       │
+       ▼
+  embedder.py     ──▶  Encodes question into a vector
+       │
+       ▼
+  vector_store.py ──▶  Finds top-3 closest chunk vectors (via L2 distance)
+       │
+       ▼
+  rag_pipeline.py ──▶  Builds a prompt:
+                         System: "Answer from this context only: [chunks]"
+                         User:   "What is RAG?"
+       │
+       ▼
+  Claude API      ──▶  Generates a grounded answer
+       │
+       ▼
+  Answer + source citations
+```
 
 ---
 
 ## Project Structure
 
 ```
-project/
-├── README.md
-├── BUILD_PLAN.md
-├── AI_CONTEXT.md
-├── PROMPTS.md
-├── backend/
-│   ├── .env
-│   ├── package.json
-│   ├── prisma/
-│   │   └── schema.prisma          # Full DB schema
-│   └── src/
-│       ├── index.js               # Express + Socket.io entry
-│       ├── middleware/
-│       │   └── auth.js            # JWT verification middleware
-│       ├── routes/                # Route definitions
-│       │   ├── auth.js
-│       │   ├── users.js
-│       │   ├── groups.js
-│       │   ├── expenses.js
-│       │   ├── settlements.js
-│       │   └── messages.js
-│       └── controllers/           # Business logic
-│           ├── authController.js
-│           ├── groupController.js
-│           ├── expenseController.js
-│           ├── settlementController.js
-│           ├── userController.js
-│           └── messageController.js
-└── frontend/
-    ├── .env
-    ├── index.html
-    ├── vite.config.js
-    ├── tailwind.config.js
-    └── src/
-        ├── main.jsx
-        ├── App.jsx                # Routes + auth guards
-        ├── index.css
-        ├── api/
-        │   └── axios.js           # Axios instance with auth interceptor
-        ├── context/
-        │   └── AuthContext.jsx    # Global auth state
-        ├── components/
-        │   ├── Layout.jsx         # Sidebar + outlet
-        │   ├── Avatar.jsx         # Initials-based colored avatar
-        │   ├── CreateGroupModal.jsx
-        │   └── SettleModal.jsx
-        └── pages/
-            ├── Login.jsx
-            ├── Register.jsx
-            ├── Dashboard.jsx      # All groups + balance summary
-            ├── GroupPage.jsx      # Expenses/Balances/Settlements/Members tabs
-            ├── NewExpense.jsx     # Create expense with split modes
-            ├── ExpenseDetail.jsx  # Split detail + real-time chat
-            └── EditExpense.jsx
+.
+├── document_loader.py   # Load .txt files and split into chunks
+├── embedder.py          # sentence-transformers: text → vectors
+├── vector_store.py      # FAISS: store and search vectors
+├── rag_pipeline.py      # Orchestrates retrieve → generate (CLI use)
+├── server.py            # FastAPI web server with streaming SSE endpoint
+├── main.py              # Interactive CLI demo
+├── static/
+│   └── index.html       # Chat UI (dark-themed, streaming, source citations)
+├── requirements.txt
+├── .env.example
+└── documents/           # Your knowledge base (add .txt files here)
+    ├── ai_basics.txt
+    ├── rag_explained.txt
+    └── llm_concepts.txt
 ```
 
 ---
 
-## Local Setup
+## Setup
 
-### Prerequisites
-- Node.js 18+
-- npm
-
-### 1. Backend
+### 1. Install dependencies
 
 ```bash
-cd backend
-npm install
+pip install -r requirements.txt
 ```
 
-The `.env` file is already configured for SQLite:
-```
-DATABASE_URL=file:./dev.db
-JWT_SECRET=supersecretkey123
-JWT_EXPIRES_IN=7d
-PORT=5000
-CLIENT_URL=http://localhost:5173
-```
+> The first run will download the `all-MiniLM-L6-v2` embedding model (~90 MB). It's cached after that.
 
-Run the database migration (creates `prisma/dev.db`):
-```bash
-npx prisma migrate dev --name init
-```
-
-Start the server:
-```bash
-npm run dev
-```
-
-Backend runs at **http://localhost:5000**
-
-### 2. Frontend
+### 2. Set your API key
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# Windows
+set ANTHROPIC_API_KEY=your_key_here
+
+# macOS/Linux
+export ANTHROPIC_API_KEY=your_key_here
 ```
 
-Frontend runs at **http://localhost:5173**
+Get a free key at [console.anthropic.com](https://console.anthropic.com).
 
-### Verify it works
-1. Open http://localhost:5173
-2. Register a new account
-3. Create a group, add another user, add an expense
+### 3a. Run the web UI (recommended)
 
----
-
-## Deployment
-
-### Backend → Railway
-
-1. Push the repo to GitHub
-2. Create a new Railway project → **Deploy from GitHub repo**
-3. Set the root directory to `/backend`
-4. Add environment variables in Railway dashboard:
-   ```
-   DATABASE_URL=file:./dev.db
-   JWT_SECRET=<generate a strong secret>
-   JWT_EXPIRES_IN=7d
-   CLIENT_URL=https://your-frontend.vercel.app
-   ```
-5. In Railway settings → add a **Volume** mounted at `/app/prisma` so `dev.db` persists across restarts
-6. Add a start command: `npx prisma migrate deploy && node src/index.js`
-
-### Frontend → Vercel
-
-1. Import the GitHub repo to Vercel
-2. Set root directory to `/frontend`
-3. Add environment variables:
-   ```
-   VITE_API_URL=https://your-backend.railway.app
-   VITE_SOCKET_URL=https://your-backend.railway.app
-   ```
-4. Deploy
-
----
-
-## API Overview
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | /api/auth/register | Create account |
-| POST | /api/auth/login | Login |
-| GET | /api/auth/me | Get current user |
-| GET | /api/users/search?email= | Search users |
-| GET | /api/users/me/balances | Personal balance across groups |
-| GET | /api/groups | List my groups |
-| POST | /api/groups | Create group |
-| GET | /api/groups/:id | Group detail |
-| PUT | /api/groups/:id | Update group |
-| DELETE | /api/groups/:id | Delete group |
-| POST | /api/groups/:id/members | Add member |
-| DELETE | /api/groups/:id/members/:userId | Remove member |
-| GET | /api/groups/:id/expenses | List expenses |
-| POST | /api/groups/:id/expenses | Create expense |
-| GET | /api/expenses/:id | Expense detail |
-| PUT | /api/expenses/:id | Update expense |
-| DELETE | /api/expenses/:id | Delete expense |
-| GET | /api/groups/:id/balances | Group balances |
-| GET | /api/groups/:id/settlements | List settlements |
-| POST | /api/groups/:id/settlements | Record settlement |
-| GET | /api/expenses/:id/messages | Chat history |
-
-### Socket.io Events
+```bash
+uvicorn server:app --reload
 ```
-Client → Server:
-  join_expense  { expenseId }
-  send_message  { expenseId, text, token }
 
-Server → Client:
-  new_message   { id, expenseId, userId, text, createdAt, user }
+Then open **http://localhost:8000** in your browser. You'll get a full chatbot interface with:
+- Streaming answers (text appears word-by-word)
+- Collapsible source citations per answer
+- Model switcher (Haiku / Sonnet)
+- Adjustable number of retrieved sources
+
+### 3b. Or run the CLI
+
+```bash
+python main.py
+```
+
+### Example session
+
+```
+=== Building Knowledge Base ===
+[Loader] Loaded 42 chunks from 'documents'
+[Embedder] Loading model 'all-MiniLM-L6-v2'...
+[VectorStore] Indexed 42 chunks. Total: 42
+=== Knowledge Base Ready ===
+
+RAG is ready! Type your question (or 'quit' to exit).
+
+You: What is the difference between supervised and unsupervised learning?
+
+[RAG] Retrieving top 3 relevant chunks...
+  #1 distance=0.2341 | source=ai_basics.txt | 'Supervised learning is a type of machine learning where...'
+  #2 distance=0.3102 | source=ai_basics.txt | 'Unsupervised learning involves training a model on data...'
+  #3 distance=0.4891 | source=llm_concepts.txt | 'Fine-tuning is the process of taking a pre-trained...'
+
+[RAG] Generating answer with Claude...
+
+Answer: Supervised learning trains a model on labeled data (input-output pairs), 
+teaching it to map inputs to known outputs — used in tasks like spam detection. 
+Unsupervised learning trains on unlabeled data, letting the model discover 
+patterns on its own — used in clustering and dimensionality reduction.
+
+Sources used:
+  [1] ai_basics.txt (distance=0.2341)
+  [2] ai_basics.txt (distance=0.3102)
+  [3] llm_concepts.txt (distance=0.4891)
 ```
 
 ---
 
-## AI Collaboration
+## Add Your Own Documents
 
-This project was built end-to-end with Claude as the primary engineering collaborator. See:
-- `AI_CONTEXT.md` — full working context, decisions, schema, and implementation notes
-- `BUILD_PLAN.md` — product research, architecture, collaboration process, tradeoffs
-- `PROMPTS.md` — key prompts used to drive the build
+Just drop `.txt` files into the `documents/` folder and restart. The pipeline indexes everything automatically.
+
+```
+documents/
+├── my_company_handbook.txt
+├── product_specs.txt
+└── faq.txt
+```
 
 ---
 
-## Known Limitations
+## Key Concepts Glossary
 
-- SQLite does not support concurrent writes well; fine for demo/low traffic
-- No image upload for avatars (initials-based fallback)
-- No email notifications
-- No push notifications
-- No expense categories or tags
-- Settlements do not auto-suggest optimal payment paths (Splitwise does this)
-- No multi-currency conversion
+| Term | What it means |
+|------|--------------|
+| **Embedding** | A list of numbers representing the *meaning* of text |
+| **Vector store** | A database optimized for searching by vector similarity |
+| **Chunk** | A small piece of a document (300 chars here) |
+| **Overlap** | Shared text between adjacent chunks to avoid cutting ideas in half |
+| **L2 distance** | How far apart two vectors are; lower = more similar |
+| **Top-K retrieval** | Returning the K closest chunks to the query |
+| **Context window** | The max text an LLM can read at once |
+| **Hallucination** | When an LLM makes up facts; RAG reduces this |
+| **System prompt** | Instructions that tell the LLM how to behave |
+
+---
+
+## Tuning Tips
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `chunk_size` | 300 chars | Smaller = more precise retrieval, less context per chunk |
+| `overlap` | 50 chars | More overlap = fewer boundary losses, more storage |
+| `top_k` | 3 | More retrieved chunks = richer context, longer prompt |
+| `model` | `claude-haiku-4-5` | Swap to `claude-sonnet-4-6` for better answers |

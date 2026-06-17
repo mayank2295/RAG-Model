@@ -1,27 +1,53 @@
-# Dependencies
-node_modules/
-
-# Environment files
+# Secrets — never commit these
 .env
-.env.local
-.env.production
+*.env
+.kaggle/
 
-# Database (file, not migrations — migrations must be committed for deployment)
-backend/prisma/dev.db
-backend/prisma/dev.db-journal
-backend/prisma/*.db
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+env/
+ENV/
 
-# Build output
-frontend/dist/
-frontend/.vite/
+# Server logs & runtime output
+server.log
+server_out.txt
+server_err.txt
+*.log
 
-# Prisma generated client
-backend/node_modules/
+# Kaggle temp downloads
+.kaggle_tmp/
+
+# Claude Code session data
+.claude/
+
+# Large downloaded datasets (run python ingest.py to regenerate)
+documents/wikipedia/
+documents/news/
+documents/science/
+documents/medical/
+documents/qa_passages/
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs
-*.log
-npm-debug.log*
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (leftover from old project)
+node_modules/

@@ -26,7 +26,7 @@ User Question
 │                      └──────────────┘         │        │
 │                                               ▼        │
 │                                    ┌──────────────────┐ │
-│                                    │   Claude LLM     │ │
+│                                    │   LLM Provider   │ │
 │                                    │ (reads context + │ │
 │                                    │ writes answer)   │ │
 │                                    └──────────────────┘ │
@@ -78,7 +78,7 @@ User question: "What is RAG?"
                          User:   "What is RAG?"
        │
        ▼
-  Claude API      ──▶  Generates a grounded answer
+  LLM API         ──▶  Generates a grounded answer
        │
        ▼
   Answer + source citations
@@ -122,13 +122,13 @@ pip install -r requirements.txt
 
 ```bash
 # Windows
-set ANTHROPIC_API_KEY=your_key_here
+set OPENROUTER_API_KEY=your_key_here
 
 # macOS/Linux
-export ANTHROPIC_API_KEY=your_key_here
+export OPENROUTER_API_KEY=your_key_here
 ```
 
-Get a free key at [console.anthropic.com](https://console.anthropic.com).
+Get a free key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
 ### 3a. Run the web UI (recommended)
 
@@ -166,7 +166,7 @@ You: What is the difference between supervised and unsupervised learning?
   #2 distance=0.3102 | source=ai_basics.txt | 'Unsupervised learning involves training a model on data...'
   #3 distance=0.4891 | source=llm_concepts.txt | 'Fine-tuning is the process of taking a pre-trained...'
 
-[RAG] Generating answer with Claude...
+[RAG] Generating answer with the selected LLM...
 
 Answer: Supervised learning trains a model on labeled data (input-output pairs), 
 teaching it to map inputs to known outputs — used in tasks like spam detection. 
@@ -217,4 +217,4 @@ documents/
 | `chunk_size` | 300 chars | Smaller = more precise retrieval, less context per chunk |
 | `overlap` | 50 chars | More overlap = fewer boundary losses, more storage |
 | `top_k` | 3 | More retrieved chunks = richer context, longer prompt |
-| `model` | `claude-haiku-4-5` | Swap to `claude-sonnet-4-6` for better answers |
+| `model` | `google/gemma-4-31b-it:free` | Swap to any supported OpenRouter model |

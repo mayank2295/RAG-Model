@@ -12,7 +12,7 @@ be outdated or not contain your specific documents). With RAG, the LLM
 """
 
 import os
-import anthropic
+from openai import OpenAI
 from typing import List
 
 from document_loader import load_documents, Chunk
@@ -27,11 +27,14 @@ class RAGPipeline:
         chunk_size: int = 300,
         overlap: int = 50,
         top_k: int = 3,
-        model: str = "claude-haiku-4-5-20251001",
+        model: str = "google/gemma-4-31b-it:free",
     ):
         self.top_k = top_k
         self.model = model
-        self.client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.environ.get("OPENROUTER_API_KEY"),
+        )
 
         # --- Build the knowledge base ---
         print("\n=== Building Knowledge Base ===")
@@ -77,14 +80,16 @@ class RAGPipeline:
             f"CONTEXT:\n{context}"
         )
 
-        response = self.client.messages.create(
+        response = self.client.chat.completions.create(
             model=self.model,
             max_tokens=512,
-            system=system_prompt,
-            messages=[{"role": "user", "content": query}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
         )
 
-        return response.content[0].text
+        return response.choices[0].message.content or ""
 
     def query(self, user_question: str) -> dict:
         """
@@ -104,7 +109,7 @@ class RAGPipeline:
             print(f"  #{i+1} distance={dist:.4f} | source={chunk.source} | '{chunk.text[:60]}...'")
 
         # Generate
-        print("[RAG] Generating answer with Claude...")
+        print("[RAG] Generating answer with the selected LLM...")
         answer = self.generate(user_question, results)
 
         return {

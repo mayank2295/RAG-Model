@@ -35,7 +35,7 @@ Output text streams out token by token
 
 ### Examples of LLMs
 - **GPT-4, GPT-4o** — OpenAI
-- **Claude 3.5, Claude 4** — Anthropic
+- **Gemini, Llama, Mistral, Qwen** — common hosted/open models
 - **Gemini 1.5 Pro** — Google
 - **Llama 3.3** — Meta (open source)
 - **Mistral 7B** — Mistral AI (open source, fast)
@@ -58,7 +58,7 @@ Generative AI is the **category** of AI that creates new content — text, image
 
 | Type | What it generates | Examples |
 |------|------------------|---------|
-| **LLM** | Text, code | GPT-4, Claude, Llama |
+| **LLM** | Text, code | GPT-4, Gemini, Llama |
 | **Image Gen** | Images from text | DALL-E, Midjourney, Stable Diffusion |
 | **Audio Gen** | Speech, music | ElevenLabs, Suno |
 | **Video Gen** | Video from text | Sora, Runway |
@@ -265,7 +265,7 @@ Orchestrator Agent (manager)
 Each agent is an LLM with specific tools and instructions. The orchestrator delegates and coordinates.
 
 ### Examples of Agentic AI systems
-- **Claude Code** — autonomously reads files, edits code, runs tests
+- **Coding agents** — autonomously read files, edit code, and run tests
 - **Devin** — autonomous software engineer
 - **AutoGPT** — early agentic system, sets and pursues goals autonomously
 - **LangGraph** — framework for building multi-agent systems

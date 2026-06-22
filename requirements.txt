@@ -2,8 +2,8 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 
-# Embeddings
-sentence-transformers==3.3.1
+# Embeddings — fastembed (ONNX) keeps memory low enough for 512MB instances
+fastembed==0.5.1
 
 # Vector DB (Pinecone v3+ SDK — Pinecone() constructor + ServerlessSpec)
 pinecone==5.4.2

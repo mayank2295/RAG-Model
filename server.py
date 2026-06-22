@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -109,18 +110,24 @@ def run_ingest() -> dict:
         _status["ingest_running"] = False
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Warm up the embedder, run an initial ingest, and start the scheduler."""
-    global _scheduler
-
-    embedder.warm_up()
-
-    # Initial ingest at startup (best-effort — server still boots on failure).
+def _startup_warmup_and_ingest() -> None:
+    """Warm the embedder and run the first ingest. Runs in a background thread
+    so the HTTP port binds immediately (cloud platforms scan for an open port
+    shortly after start and fail the deploy if it blocks)."""
     try:
+        embedder.warm_up()
         run_ingest()
     except Exception:
-        logger.exception("Initial ingest failed — server will continue and retry on schedule.")
+        logger.exception("Startup warm-up/ingest failed — will retry on schedule.")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the scheduler and kick off warm-up + first ingest in the background."""
+    global _scheduler
+
+    # Do NOT block startup — open the port first, ingest in a worker thread.
+    threading.Thread(target=_startup_warmup_and_ingest, daemon=True).start()
 
     _scheduler = BackgroundScheduler(daemon=True)
     _scheduler.add_job(

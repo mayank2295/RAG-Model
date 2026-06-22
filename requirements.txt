@@ -1,16 +1,22 @@
-# Core RAG
-sentence-transformers>=3.0.0
-faiss-cpu>=1.8.0
-numpy>=1.26.0
-
 # Web server
-fastapi>=0.111.0
-uvicorn>=0.29.0
-python-multipart>=0.0.9
-openai>=1.0.0
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
 
-# Dataset ingestion
-kaggle>=1.6.0
-datasets>=2.18.0
-huggingface-hub>=0.22.0
-pandas>=2.0.0
+# Embeddings
+sentence-transformers==3.3.1
+
+# Vector DB (Pinecone v3+ SDK — Pinecone() constructor + ServerlessSpec)
+pinecone==5.4.2
+
+# Scheduling
+apscheduler==3.11.0
+
+# HTTP + HTML parsing for fetchers
+httpx==0.28.1
+beautifulsoup4==4.12.3
+
+# Config
+python-dotenv==1.0.1
+
+# OpenRouter (OpenAI-compatible client)
+openai==1.59.6

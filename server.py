@@ -1,93 +1,147 @@
 """
-FastAPI server — RAG pipeline + chat UI.
+News & Jobs RAG Chatbot — FastAPI server.
 
 Endpoints:
-  GET  /              → chat UI
-  POST /api/chat      → SSE streaming answer
-  GET  /api/health    → health + chunk count
-  GET  /api/models    → available LLM list
-  GET  /api/documents → indexed sources + stats
-  GET  /api/stats     → full knowledge base stats
-  POST /api/rebuild   → hot-reload the knowledge base from disk
+    GET  /            → chat UI
+    POST /api/chat    → SSE streaming answer grounded in news + jobs context
+    POST /api/ingest  → manually trigger a news + jobs fetch
+    GET  /api/status  → last ingest time + vector counts per namespace
+
+An APScheduler BackgroundScheduler runs the ingest every 6 hours. An initial
+ingest runs once at startup. All configuration comes from environment
+variables — there is no local file storage anywhere.
+
+Environment variables:
+    PINECONE_API_KEY, PINECONE_INDEX, NEWSAPI_KEY, OPENROUTER_API_KEY
 """
 
 import json
+import logging
 import os
-import asyncio
+import sys
 import time
-from pathlib import Path
 from contextlib import asynccontextmanager
-from collections import defaultdict
+from pathlib import Path
 
-from openai import OpenAI
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
 from pydantic import BaseModel
 
-from document_loader import load_documents
-from embedder import Embedder
-from vector_store import VectorStore
+import embedder
+import vector_store
+from jobs_fetcher import fetch_and_ingest_jobs
+from news_fetcher import fetch_and_ingest_news
 
+load_dotenv()
 
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-if not OPENROUTER_API_KEY:
-    import sys
-    print("ERROR: OPENROUTER_API_KEY environment variable is not set.")
-    print("  Copy .env.example to .env and add your key from https://openrouter.ai/keys")
-    sys.exit(1)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("server")
+
+# Force UTF-8 stdout/stderr so Unicode logs don't crash on Windows.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream and getattr(_stream, "encoding", "").lower() != "utf-8":
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+LLM_MODEL = "anthropic/claude-3-haiku"
+INGEST_INTERVAL_HOURS = 6
 
-AVAILABLE_MODELS = [
-    {"id": "google/gemma-4-31b-it:free",             "name": "Gemma 4 31B",   "provider": "Google"},
-    {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B", "provider": "Meta"},
-    {"id": "mistralai/mistral-7b-instruct:free",      "name": "Mistral 7B",    "provider": "Mistral"},
-    {"id": "meta-llama/llama-3.2-3b-instruct:free",  "name": "Llama 3.2 3B",  "provider": "Meta"},
-    {"id": "qwen/qwen-2.5-7b-instruct:free",         "name": "Qwen 2.5 7B",   "provider": "Qwen"},
-]
+SYSTEM_PROMPT = (
+    "You are a helpful assistant with access to today's latest news and job "
+    "openings. Answer questions based on the provided context. If the context "
+    "does not contain the answer, say so clearly."
+)
 
-rag_state: dict = {}
+# Runtime status, kept in memory (no disk).
+_status = {
+    "last_ingest_started": None,
+    "last_ingest_finished": None,
+    "last_news_count": None,
+    "last_jobs_count": None,
+    "ingest_running": False,
+}
+
+_scheduler: BackgroundScheduler | None = None
 
 
-def _build_kb():
-    """Load documents, embed, and populate rag_state."""
-    t0 = time.time()
-    print("\n=== Building Knowledge Base ===")
-    chunks = load_documents("documents", chunk_size=500, overlap=80)
-    embedder = rag_state.get("embedder") or Embedder()
-    embeddings = embedder.embed([c.text for c in chunks])
-    store = VectorStore(embedding_dim=embeddings.shape[1])
-    store.add(chunks, embeddings)
-    elapsed = time.time() - t0
+def _openrouter_client() -> OpenAI:
+    """Build an OpenRouter-compatible OpenAI client from env config."""
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY environment variable is not set.")
+    return OpenAI(base_url=OPENROUTER_BASE_URL, api_key=api_key)
 
-    # Category breakdown
-    cats: dict = defaultdict(int)
-    for c in chunks:
-        top = c.source.split("/")[0]
-        cats[top] += 1
 
-    rag_state.update({
-        "chunks": chunks,
-        "embedder": embedder,
-        "store": store,
-        "built_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "build_seconds": round(elapsed, 1),
-        "categories": dict(cats),
-        "client": OpenAI(base_url=OPENROUTER_BASE_URL, api_key=OPENROUTER_API_KEY),
-    })
-    print(f"=== Knowledge Base Ready — {len(chunks):,} chunks in {elapsed:.1f}s ===\n")
+def run_ingest() -> dict:
+    """
+    Run a full news + jobs ingest cycle and update the in-memory status.
+
+    Returns:
+        Dict with the counts ingested for each namespace.
+    """
+    if _status["ingest_running"]:
+        logger.warning("Ingest already running — skipping this trigger.")
+        return {"skipped": True}
+
+    _status["ingest_running"] = True
+    _status["last_ingest_started"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        logger.info("=== Ingest cycle starting ===")
+        news_count = fetch_and_ingest_news()
+        jobs_count = fetch_and_ingest_jobs()
+        _status["last_news_count"] = news_count
+        _status["last_jobs_count"] = jobs_count
+        _status["last_ingest_finished"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        logger.info("=== Ingest cycle done — news=%d jobs=%d ===", news_count, jobs_count)
+        return {"news": news_count, "jobs": jobs_count}
+    finally:
+        _status["ingest_running"] = False
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _build_kb)
+    """Warm up the embedder, run an initial ingest, and start the scheduler."""
+    global _scheduler
+
+    embedder.warm_up()
+
+    # Initial ingest at startup (best-effort — server still boots on failure).
+    try:
+        run_ingest()
+    except Exception:
+        logger.exception("Initial ingest failed — server will continue and retry on schedule.")
+
+    _scheduler = BackgroundScheduler(daemon=True)
+    _scheduler.add_job(
+        run_ingest,
+        trigger="interval",
+        hours=INGEST_INTERVAL_HOURS,
+        id="periodic_ingest",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.start()
+    logger.info("Scheduler started — ingest every %d hours.", INGEST_INTERVAL_HOURS)
+
     yield
-    rag_state.clear()
+
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+        logger.info("Scheduler stopped.")
 
 
-app = FastAPI(title="RAG Chatbot", lifespan=lifespan)
+app = FastAPI(title="News & Jobs RAG Chatbot", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -96,157 +150,123 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+_STATIC_DIR = Path(__file__).parent / "static"
+if _STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
-# ── Frontend ──────────────────────────────────────────────────────────────────
+# ── Frontend ────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
-    with open("static/index.html", "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+    """Serve the chat UI."""
+    index_path = _STATIC_DIR / "index.html"
+    if not index_path.exists():
+        return HTMLResponse("<h1>News & Jobs RAG Chatbot</h1><p>UI not found.</p>")
+    return HTMLResponse(index_path.read_text(encoding="utf-8"))
 
 
-# ── Info endpoints ─────────────────────────────────────────────────────────────
+# ── Status + manual ingest ────────────────────────────────────────────────────
 
-@app.get("/api/health")
-async def health():
+@app.get("/api/status")
+async def status():
+    """Return last ingest time and vector counts for both namespaces."""
+    counts = vector_store.namespace_counts()
     return {
-        "status": "ok",
-        "chunks_indexed": len(rag_state.get("chunks", [])),
-        "built_at": rag_state.get("built_at"),
+        "last_ingest_started": _status["last_ingest_started"],
+        "last_ingest_finished": _status["last_ingest_finished"],
+        "last_news_count": _status["last_news_count"],
+        "last_jobs_count": _status["last_jobs_count"],
+        "ingest_running": _status["ingest_running"],
+        "vector_counts": counts,
+        "ingest_interval_hours": INGEST_INTERVAL_HOURS,
     }
 
 
-@app.get("/api/models")
-async def list_models():
-    return {"models": AVAILABLE_MODELS}
+@app.post("/api/ingest")
+async def ingest():
+    """Manually trigger a news + jobs ingest cycle (runs synchronously)."""
+    result = run_ingest()
+    if result.get("skipped"):
+        raise HTTPException(status_code=409, detail="Ingest already in progress.")
+    return {"status": "ok", **result}
 
 
-@app.get("/api/documents")
-async def list_documents():
-    chunks = rag_state.get("chunks", [])
-    sources = sorted({c.source for c in chunks})
-    return {"documents": sources, "total_chunks": len(chunks)}
-
-
-@app.get("/api/stats")
-async def knowledge_base_stats():
-    chunks = rag_state.get("chunks", [])
-    docs_dir = Path("documents")
-
-    # File counts per category
-    file_counts: dict = defaultdict(int)
-    for p in docs_dir.rglob("*"):
-        if p.is_file() and p.suffix.lower() in (".txt", ".csv", ".json", ".jsonl"):
-            top = p.relative_to(docs_dir).parts[0] if len(p.relative_to(docs_dir).parts) > 1 else "root"
-            file_counts[top] += 1
-
-    total_size_mb = sum(
-        p.stat().st_size for p in docs_dir.rglob("*") if p.is_file()
-    ) / 1024 / 1024 if docs_dir.exists() else 0
-
-    return {
-        "total_chunks": len(chunks),
-        "total_files": sum(file_counts.values()),
-        "total_size_mb": round(total_size_mb, 2),
-        "categories": dict(sorted(file_counts.items())),
-        "chunk_categories": rag_state.get("categories", {}),
-        "built_at": rag_state.get("built_at"),
-        "build_seconds": rag_state.get("build_seconds"),
-    }
-
-
-# ── Rebuild endpoint ───────────────────────────────────────────────────────────
-
-_rebuild_lock = asyncio.Lock()
-_rebuild_status = {"running": False, "last": None}
-
-
-@app.post("/api/rebuild")
-async def rebuild_kb(background_tasks: BackgroundTasks):
-    """Hot-reload the knowledge base from disk without restarting the server."""
-    if _rebuild_status["running"]:
-        raise HTTPException(status_code=409, detail="Rebuild already in progress.")
-
-    async def _run():
-        _rebuild_status["running"] = True
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, _build_kb)
-            _rebuild_status["last"] = rag_state.get("built_at")
-        finally:
-            _rebuild_status["running"] = False
-
-    background_tasks.add_task(_run)
-    return {"status": "rebuilding", "message": "Knowledge base rebuild started. Check /api/health for completion."}
-
-
-# ── Chat endpoint ──────────────────────────────────────────────────────────────
+# ── Chat ───────────────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
+    """Body for POST /api/chat."""
     message: str
     top_k: int = 5
-    model: str = "google/gemma-4-31b-it:free"
+
+
+def _format_context(matches: list[dict]) -> str:
+    """Format Pinecone matches into a readable context block for the LLM."""
+    lines: list[str] = []
+    for m in matches:
+        md = m.get("metadata", {})
+        ns = m.get("namespace")
+        if ns == "news":
+            lines.append(
+                f"[NEWS] {md.get('title', '')} "
+                f"(source: {md.get('source', 'Unknown')}, {md.get('publishedAt', '')})\n"
+                f"{md.get('description', '')}\nURL: {md.get('url', '')}"
+            )
+        elif ns == "jobs":
+            lines.append(
+                f"[JOB] {md.get('title', '')} at {md.get('company', '')} "
+                f"({md.get('published_date', '')})\n"
+                f"Tags: {', '.join(md.get('tags', []))}\nURL: {md.get('url', '')}"
+            )
+        else:
+            lines.append(json.dumps(md))
+    return "\n\n---\n\n".join(lines) if lines else "No relevant context found."
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
+    """
+    Answer a question grounded in the latest news + job context, streamed via SSE.
+
+    Pipeline: embed query → query both namespaces → format context →
+    OpenRouter chat completion → stream tokens as Server-Sent Events.
+    """
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
     if len(req.message) > 4000:
         raise HTTPException(status_code=400, detail="Message exceeds 4000 characters.")
-    if not 1 <= req.top_k <= 20:
-        raise HTTPException(status_code=400, detail="top_k must be between 1 and 20.")
+    top_k = max(1, min(req.top_k, 20))
 
-    embedder: Embedder = rag_state["embedder"]
-    store: VectorStore = rag_state["store"]
-    client: OpenAI = rag_state["client"]
-
-    loop = asyncio.get_event_loop()
-    query_embedding = await loop.run_in_executor(None, embedder.embed_query, req.message)
-    results = store.search(query_embedding, top_k=req.top_k)
+    query_vector = embedder.embed_text(req.message)
+    matches = vector_store.query_all_namespaces(query_vector, top_k=top_k)
+    context = _format_context(matches)
 
     sources = [
-        {"source": chunk.source, "text": chunk.text, "distance": round(dist, 4)}
-        for chunk, dist in results
+        {"namespace": m.get("namespace"), "score": m.get("score"), "metadata": m.get("metadata", {})}
+        for m in matches
     ]
 
-    context = "\n\n---\n\n".join(
-        f"[Source: {chunk.source}]\n{chunk.text}" for chunk, _ in results
-    )
-
-    system_prompt = (
-        "You are a knowledgeable and friendly AI assistant with access to a large knowledge base. "
-        "Answer the user's question in a clear, well-structured way.\n\n"
-        "Guidelines:\n"
-        "- Use the CONTEXT passages below when they are relevant — they come from the user's indexed documents.\n"
-        "- If the context covers the topic, weave that information naturally into your answer.\n"
-        "- If the context doesn't fully cover the topic, also use your general knowledge.\n"
-        "- Format responses with markdown: **bold** for key terms, bullet lists for multiple points, "
-        "short paragraphs. Keep answers concise but complete.\n"
-        "- For greetings or general conversation, respond naturally without forcing the context.\n"
-        "- Only say you lack information if the question requires private/proprietary data "
-        "that is genuinely absent from both the context and your training.\n\n"
-        f"CONTEXT:\n{context}"
-    )
+    client = _openrouter_client()
+    user_content = f"CONTEXT:\n{context}\n\nQUESTION: {req.message}"
 
     def event_stream():
         yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
         try:
             stream = client.chat.completions.create(
-                model=req.model,
+                model=LLM_MODEL,
                 max_tokens=1024,
                 stream=True,
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": req.message},
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
                 ],
             )
             for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
-                    yield f"data: {json.dumps({'type': 'token', 'text': chunk.choices[0].delta.content})}\n\n"
+                    token = chunk.choices[0].delta.content
+                    yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
         except Exception as e:
+            logger.exception("LLM streaming failed.")
             yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
@@ -255,3 +275,9 @@ async def chat(req: ChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", "10000"))
+    uvicorn.run("server:app", host="0.0.0.0", port=port)

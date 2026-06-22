@@ -1,0 +1,26 @@
+name: Scheduled Ingest
+
+# Pings the deployed app's /api/ingest endpoint so fresh news + jobs are
+# fetched on a schedule. This is important on Render's free tier, where the
+# service sleeps after inactivity and the in-app APScheduler pauses with it.
+#
+# Setup: add a repository secret named APP_URL set to your deployed base URL,
+# e.g. https://rag-model.onrender.com  (no trailing slash).
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours (UTC)
+  workflow_dispatch: {}       # allow manual runs from the Actions tab
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger ingest
+        run: |
+          if [ -z "${{ secrets.APP_URL }}" ]; then
+            echo "APP_URL secret is not set — skipping."
+            exit 0
+          fi
+          echo "Triggering ingest at ${{ secrets.APP_URL }}/api/ingest"
+          curl -sS -X POST "${{ secrets.APP_URL }}/api/ingest" --max-time 280 -w "\nHTTP %{http_code}\n"

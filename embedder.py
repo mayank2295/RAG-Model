@@ -1,39 +1,111 @@
 """
-Step 2 of RAG: Turn text into vectors (embeddings).
+Embedding module — sentence-transformers/all-MiniLM-L6-v2.
 
-An embedding is a list of numbers (a vector) that captures the *meaning* of
-a sentence. Sentences with similar meanings end up with similar vectors.
-This is what makes semantic search possible — we don't look for exact word
-matches, we look for meaning matches.
+Loads the model once (singleton) at first use and reuses it for every
+embedding call. Produces 384-dimensional vectors suitable for Pinecone.
 
-We use sentence-transformers (runs locally, no API key needed) with the
-'all-MiniLM-L6-v2' model, which produces 384-dimensional vectors and is
-fast enough to run on a laptop CPU.
+Public API:
+    embed_text(text)   -> list[float]
+    embed_batch(texts) -> list[list[float]]
 """
 
-import numpy as np
+import logging
+import threading
+import time
 from typing import List
+
 from sentence_transformers import SentenceTransformer
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("embedder")
 
-class Embedder:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        print(f"[Embedder] Loading model '{model_name}' (downloads once, then cached)...")
-        self.model = SentenceTransformer(model_name)
-        dim = getattr(self.model, 'get_embedding_dimension', self.model.get_sentence_embedding_dimension)()
-        print(f"[Embedder] Model ready. Embedding dimension: {dim}")
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+# all-MiniLM-L6-v2 has a 256 word-piece limit; we cap characters generously
+# below the 512-token ceiling requested. SentenceTransformer truncates
+# internally, but we also hard-cap to keep memory predictable.
+MAX_CHARS = 2000  # ~512 tokens worst case
 
-    def embed(self, texts: List[str]) -> np.ndarray:
-        """
-        Convert a list of strings into a 2-D numpy array of shape (N, D)
-        where N = number of texts and D = embedding dimension (384).
+_model: SentenceTransformer | None = None
+_model_lock = threading.Lock()
 
-        Both document chunks and user queries go through this same function —
-        that's the key: they land in the same vector space, so we can compare them.
-        """
-        vectors = self.model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
-        return vectors.astype("float32")  # FAISS expects float32
 
-    def embed_query(self, query: str) -> np.ndarray:
-        """Embed a single query string. Returns shape (1, D)."""
-        return self.embed([query])
+def _get_model() -> SentenceTransformer:
+    """Return the singleton SentenceTransformer, loading it once if needed."""
+    global _model
+    if _model is None:
+        with _model_lock:
+            if _model is None:
+                logger.info("Loading embedding model '%s' ...", MODEL_NAME)
+                t0 = time.time()
+                _model = SentenceTransformer(MODEL_NAME)
+                # Enforce the 512-token cap requested in the spec.
+                _model.max_seq_length = 512
+                logger.info(
+                    "Embedding model ready in %.1fs (dim=%d, max_seq_len=%d)",
+                    time.time() - t0,
+                    _model.get_sentence_embedding_dimension(),
+                    _model.max_seq_length,
+                )
+    return _model
+
+
+def _truncate(text: str) -> str:
+    """Trim text to a safe character length before embedding."""
+    text = (text or "").strip()
+    if len(text) > MAX_CHARS:
+        return text[:MAX_CHARS]
+    return text
+
+
+def embed_text(text: str) -> List[float]:
+    """
+    Embed a single string into a 384-dimensional vector.
+
+    Args:
+        text: Raw input text. Truncated to a safe length (~512 tokens).
+
+    Returns:
+        A list of floats (the embedding). Empty input still returns a valid
+        zero-meaning vector for the empty string so callers never crash.
+    """
+    model = _get_model()
+    vector = model.encode(
+        _truncate(text),
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )
+    return vector.astype("float32").tolist()
+
+
+def embed_batch(texts: List[str]) -> List[List[float]]:
+    """
+    Embed a list of strings into a list of 384-dimensional vectors.
+
+    Args:
+        texts: List of raw input strings. Each is truncated independently.
+
+    Returns:
+        A list of embedding vectors, one per input string, in the same order.
+    """
+    if not texts:
+        return []
+    model = _get_model()
+    cleaned = [_truncate(t) for t in texts]
+    vectors = model.encode(
+        cleaned,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        batch_size=32,
+    )
+    logger.info("Embedded batch of %d texts", len(cleaned))
+    return [v.astype("float32").tolist() for v in vectors]
+
+
+def warm_up() -> None:
+    """Pre-load the model at startup so the first request isn't slow."""
+    _get_model()

@@ -44,12 +44,22 @@ Open http://localhost:10000
 
 ## Deploy on Render
 
+**Option A — Blueprint (one click):** this repo ships a `render.yaml`. In Render:
+**New + → Blueprint**, connect the repo, and Render reads the build/start commands
+automatically. You'll be prompted to fill the three secret env vars.
+
+**Option B — manual Web Service:**
+
 1. Push this repo to GitHub and connect it as a new **Web Service** on Render.
 2. Add the four environment variables above under **Environment**.
 3. **Build command:** `pip install -r requirements.txt`
-4. **Start command:** `uvicorn server:app --host 0.0.0.0 --port 10000`
+4. **Start command:** `uvicorn server:app --host 0.0.0.0 --port $PORT`
 5. Deploy. The first boot runs an initial ingest, then it self-refreshes every
    6 hours.
+
+> **Free-tier note:** the embedding model (PyTorch + MiniLM) needs ~400–500 MB
+> RAM. Render's free instance has 512 MB, which is tight — if the service OOMs
+> on boot, upgrade to the **Starter** plan.
 
 ## API endpoints
 

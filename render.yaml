@@ -1,0 +1,22 @@
+# Render Blueprint — one-click deploy.
+# In Render: New + → Blueprint → connect this repo. Render reads this file,
+# then prompts you for the secret env vars (sync: false) in the dashboard.
+services:
+  - type: web
+    name: news-jobs-rag
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/status
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: PINECONE_API_KEY
+        sync: false          # set in dashboard (secret)
+      - key: PINECONE_INDEX
+        value: news-jobs-rag
+      - key: NEWSAPI_KEY
+        sync: false          # set in dashboard (secret)
+      - key: OPENROUTER_API_KEY
+        sync: false          # set in dashboard (secret)
